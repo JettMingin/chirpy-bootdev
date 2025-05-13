@@ -1,69 +1,62 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sync/atomic"
 	"time"
 
+	"github.com/JettMingin/chirpy-bootdev/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileServerHits atomic.Int32
+	DB             *database.Queries
 }
 
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		cfg.fileServerHits.Add(1)
-		next.ServeHTTP(w, req)
-	})
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Email     string    `json:"email"`
 }
 
-func (cfg *apiConfig) metricsHandler(res http.ResponseWriter, req *http.Request) {
-	res.Header().Set("Content-Type", "text/html")
-	resHTML := `
-		<html>
-			<body>
-				<h1>Welcome, Chirpy Admin</h1>
-				<p>Chirpy has been visited %d times!</p>
-			</body>
-		</html>
-	`
-	hitVal := cfg.fileServerHits.Load()
-	res.WriteHeader(http.StatusOK)
-	res.Write(fmt.Appendf(nil, resHTML, hitVal))
-}
-
-func validateChirpHandler(res http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) postUser(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
-	type Chirp struct {
-		Body string `json:"body"`
+
+	reqData, err := io.ReadAll(req.Body)
+	if err != nil {
+		log.Printf("Error reading req.Body: %s", err)
+		res.WriteHeader(500)
+		return
 	}
-	newChirp := Chirp{}
-	if err := json.NewDecoder(req.Body).Decode(&newChirp); err != nil {
-		log.Printf("Error decoding parameters: %s", err)
+	var newEmail map[string]string
+	if err := json.Unmarshal(reqData, &newEmail); err != nil {
+		log.Printf("Error Unmarshalling req.Body: %s", err)
 		res.WriteHeader(500)
 		return
 	}
 
-	type errorRes struct {
-		Reserr string `json:"error"`
-	}
-	type successRes struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
+	fmt.Println("newEmail map:", newEmail)
 
-	if len(newChirp.Body) > 140 || len(newChirp.Body) < 1 {
-		resBody := errorRes{
-			Reserr: "invalid Chirp length",
+	emailRegex := regexp.MustCompile(`(?i)^[0-9a-z]+@[a-z0-9]+\.[a-z]{1,3}$`)
+	checkEmail, ok := newEmail["email"]
+	if !ok || !emailRegex.MatchString(checkEmail) {
+		var errorMap = map[string]string{
+			"error": "req.Body did not contain valid email key or value",
 		}
-		data, err := json.Marshal(resBody)
+		data, err := json.Marshal(errorMap)
 		if err != nil {
-			log.Printf("Error Mashalling Response JSON: %s", err)
+			log.Printf("Error marshalling error response: %s", err)
 			res.WriteHeader(500)
 			return
 		}
@@ -72,32 +65,30 @@ func validateChirpHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var profanityRegexes = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bkerfuffle\b`),
-		regexp.MustCompile(`(?i)\bsharbert\b`),
-		regexp.MustCompile(`(?i)\bfornax\b`),
-	}
-	cleanedString := newChirp.Body
-	for _, cussRegEx := range profanityRegexes {
-		cleanedString = cussRegEx.ReplaceAllString(cleanedString, "****")
-	}
-	resBody := successRes{
-		CleanedBody: cleanedString,
-	}
-	data, err := json.Marshal(resBody)
-	if err != nil {
-		log.Printf("Error Mashalling Response JSON: %s", err)
-		res.WriteHeader(500)
-		return
-	}
+	// newUser := User{}
+	//process the email and add a new user to db
+
 	res.WriteHeader(200)
-	res.Write(data)
+	//respond with the new user json, not this message
+	res.Write([]byte("response from postUser"))
 }
 
 func main() {
-	servemux := http.NewServeMux()
+	//set up db
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		panic(err)
+	}
+	dbQueries := database.New(db)
 
-	apiCfg := &apiConfig{}
+	apiCfg := &apiConfig{
+		DB: dbQueries,
+	}
+
+	servemux := http.NewServeMux() //multiplex (seems to work like my map-based router in deno)
+
 	myFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 	servemux.Handle("/app/", apiCfg.middlewareMetricsInc(myFileServer))
 
@@ -106,10 +97,11 @@ func main() {
 		res.WriteHeader(http.StatusOK)
 		res.Write([]byte("OK"))
 	})
+
 	servemux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	servemux.HandleFunc("POST /api/users", apiCfg.postUser)
 
 	servemux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
-
 	servemux.HandleFunc("POST /admin/reset", func(res http.ResponseWriter, req *http.Request) {
 		apiCfg.fileServerHits.Store(0)
 		res.WriteHeader(http.StatusOK)
