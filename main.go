@@ -17,6 +17,7 @@ type apiConfig struct {
 	fileServerHits atomic.Int32
 	DB             *database.Queries
 	Platform       string
+	TokenSecret    string
 }
 
 func main() {
@@ -24,6 +25,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	superSecret := os.Getenv("TOKEN_SECRET")
 
 	//set up db
 	db, err := sql.Open("postgres", dbURL)
@@ -33,8 +35,9 @@ func main() {
 	dbQueries := database.New(db)
 
 	apiCfg := &apiConfig{
-		DB:       dbQueries,
-		Platform: platform,
+		DB:          dbQueries,
+		Platform:    platform,
+		TokenSecret: superSecret,
 	}
 
 	servemux := http.NewServeMux() //multiplex (seems to work like my map-based router in deno)
@@ -49,11 +52,15 @@ func main() {
 	})
 
 	servemux.HandleFunc("POST /api/users", apiCfg.postUser)
-	servemux.HandleFunc("POST /api/login", apiCfg.login)
+	servemux.HandleFunc("POST /api/login", apiCfg.Login)
+	servemux.HandleFunc("PUT /api/users", apiCfg.UpdateUser)
+	servemux.HandleFunc("POST /api/refresh", apiCfg.RefreshAccessToken)
+	servemux.HandleFunc("POST /api/revoke", apiCfg.RevokeRefreshToken)
 
 	servemux.HandleFunc("GET /api/chirps", apiCfg.getAllChirps)
 	servemux.HandleFunc("GET /api/chirps/{chirpId}", apiCfg.getChirp)
 	servemux.HandleFunc("POST /api/chirps", apiCfg.postChirp)
+	servemux.HandleFunc("DELETE /api/chirps/{chirpId}", apiCfg.DeleteChirp)
 
 	servemux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	servemux.HandleFunc("POST /admin/reset", apiCfg.postToReset)

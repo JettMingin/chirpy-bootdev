@@ -1,7 +1,11 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -44,7 +48,32 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	if tokenClaims, ok := parsedToken.Claims.(*MyCustomClaims); ok {
 		return uuid.MustParse(tokenClaims.RegisteredClaims.Subject), nil
 	} else {
-		return uuid.UUID{}, errors.New("auth/tokens.go: failed to parse token fo claims")
+		return uuid.UUID{}, errors.New("auth/tokens.go: failed to parse token for claims")
 	}
 
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeaders, ok := headers["Authorization"]
+	if !ok {
+		return "", errors.New("auth/tokens.go: failed to get 'Authorization' Header Value")
+	}
+	authToken := ""
+	for _, el := range authHeaders {
+		if strings.HasPrefix(el, "Bearer") {
+			el = strings.TrimPrefix(el, "Bearer")
+			authToken = strings.Trim(el, " ")
+			break
+		}
+	}
+	if authToken == "" {
+		return "", errors.New("auth/tokens.go: failed to extract token from Authorization Header")
+	}
+	return authToken, nil
+}
+
+func MakeRefreshToken() string {
+	key := make([]byte, 32)
+	rand.Read(key)
+	return hex.EncodeToString(key)
 }
