@@ -18,6 +18,7 @@ type apiConfig struct {
 	DB             *database.Queries
 	Platform       string
 	TokenSecret    string
+	PolkaKey       string
 }
 
 func main() {
@@ -26,6 +27,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	superSecret := os.Getenv("TOKEN_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 
 	//set up db
 	db, err := sql.Open("postgres", dbURL)
@@ -38,6 +40,7 @@ func main() {
 		DB:          dbQueries,
 		Platform:    platform,
 		TokenSecret: superSecret,
+		PolkaKey:    polkaKey,
 	}
 
 	servemux := http.NewServeMux() //multiplex (seems to work like my map-based router in deno)
@@ -57,10 +60,12 @@ func main() {
 	servemux.HandleFunc("POST /api/refresh", apiCfg.RefreshAccessToken)
 	servemux.HandleFunc("POST /api/revoke", apiCfg.RevokeRefreshToken)
 
-	servemux.HandleFunc("GET /api/chirps", apiCfg.getAllChirps)
+	servemux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
 	servemux.HandleFunc("GET /api/chirps/{chirpId}", apiCfg.getChirp)
 	servemux.HandleFunc("POST /api/chirps", apiCfg.postChirp)
 	servemux.HandleFunc("DELETE /api/chirps/{chirpId}", apiCfg.DeleteChirp)
+
+	servemux.HandleFunc("POST /api/polka/webhooks", apiCfg.UpgradeUser)
 
 	servemux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
 	servemux.HandleFunc("POST /admin/reset", apiCfg.postToReset)

@@ -48,6 +48,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) getChirp(res http.ResponseWriter, req *http.Request) {
@@ -80,25 +81,47 @@ func (cfg *apiConfig) getChirp(res http.ResponseWriter, req *http.Request) {
 	res.Write(successRes)
 }
 
-func (cfg *apiConfig) getAllChirps(res http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) getChirps(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
 
-	dbChirps, err := cfg.DB.GetAllChirps(req.Context())
-	if err != nil {
-		ErrorResponseWriter(res, "failed to query for all chirps in DB", err, 500)
+	var dbChirps []database.Chirp
+	var dbErr error
+
+	authorId := req.URL.Query().Get("author_id")
+	if authorId == "" {
+		dbChirps, dbErr = cfg.DB.GetAllChirps(req.Context())
+	} else {
+		dbChirps, dbErr = cfg.DB.GetAuthorsChirps(req.Context(), uuid.MustParse(authorId))
+	}
+
+	if dbErr != nil {
+		ErrorResponseWriter(res, "failed to query for chirps in DB", dbErr, 500)
 		return
 	}
 
 	selectedChirps := []Chirp{}
-	for _, row := range dbChirps {
-		aChirp := Chirp{
-			ID:        row.ID,
-			CreatedAt: row.CreatedAt,
-			UpdatedAt: row.UpdatedAt,
-			Body:      row.Body,
-			UserID:    row.UserID,
+	if req.URL.Query().Get("sort") == "desc" {
+		for i := len(dbChirps) - 1; i >= 0; i-- {
+			aChirp := Chirp{
+				ID:        dbChirps[i].ID,
+				CreatedAt: dbChirps[i].CreatedAt,
+				UpdatedAt: dbChirps[i].UpdatedAt,
+				Body:      dbChirps[i].Body,
+				UserID:    dbChirps[i].UserID,
+			}
+			selectedChirps = append(selectedChirps, aChirp)
 		}
-		selectedChirps = append(selectedChirps, aChirp)
+	} else {
+		for _, row := range dbChirps {
+			aChirp := Chirp{
+				ID:        row.ID,
+				CreatedAt: row.CreatedAt,
+				UpdatedAt: row.UpdatedAt,
+				Body:      row.Body,
+				UserID:    row.UserID,
+			}
+			selectedChirps = append(selectedChirps, aChirp)
+		}
 	}
 
 	successRes, err := json.Marshal(selectedChirps)
@@ -224,10 +247,11 @@ func (cfg *apiConfig) postUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 	newUser := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 
 	responseSuc, err := json.Marshal(newUser)
@@ -271,10 +295,11 @@ func (cfg *apiConfig) Login(res http.ResponseWriter, req *http.Request) {
 	}
 
 	newUser := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 
 	newToken, err := auth.MakeJWT(newUser.ID, cfg.TokenSecret, time.Duration(3600)*time.Second)
@@ -405,10 +430,11 @@ func (cfg *apiConfig) UpdateUser(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 	updatedUser := User{
-		ID:        updatedUserInfo.ID,
-		CreatedAt: updatedUserInfo.CreatedAt,
-		UpdatedAt: updatedUserInfo.UpdatedAt,
-		Email:     updatedUserInfo.Email,
+		ID:          updatedUserInfo.ID,
+		CreatedAt:   updatedUserInfo.CreatedAt,
+		UpdatedAt:   updatedUserInfo.UpdatedAt,
+		Email:       updatedUserInfo.Email,
+		IsChirpyRed: updatedUserInfo.IsChirpyRed,
 	}
 	responseSuc, err := json.Marshal(updatedUser)
 	if err != nil {
@@ -448,6 +474,48 @@ func (cfg *apiConfig) DeleteChirp(res http.ResponseWriter, req *http.Request) {
 
 	if err := cfg.DB.DeleteOneChirp(req.Context(), dbChirp.ID); err != nil {
 		res.WriteHeader(500)
+		return
+	}
+	res.WriteHeader(204)
+}
+
+func (cfg *apiConfig) UpgradeUser(res http.ResponseWriter, req *http.Request) {
+	res.Header().Set("Content-Type", "application/json")
+
+	polkaKey, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		ErrorResponseWriter(res, "GetAPIKey Failed", err, 401)
+		return
+	}
+	if polkaKey != cfg.PolkaKey {
+		res.WriteHeader(401)
+		return
+	}
+
+	type PolkaData struct {
+		UserID string `json:"user_id"`
+	}
+	type PolkaRequest struct {
+		Event string    `json:"event"`
+		Data  PolkaData `json:"data"`
+	}
+
+	reqData, err := io.ReadAll(req.Body)
+	if err != nil {
+		ErrorResponseWriter(res, "Failed to read request body", err, 500)
+		return
+	}
+	var polkaReq PolkaRequest
+	if err := json.Unmarshal(reqData, &polkaReq); err != nil {
+		ErrorResponseWriter(res, "Failed to decode request body", err, 500)
+		return
+	}
+	if polkaReq.Event != "user.upgraded" {
+		res.WriteHeader(204)
+		return
+	}
+	if err := cfg.DB.UpgradeUserToRed(req.Context(), uuid.MustParse(polkaReq.Data.UserID)); err != nil {
+		ErrorResponseWriter(res, "Failed to update user in DB", err, 404)
 		return
 	}
 	res.WriteHeader(204)

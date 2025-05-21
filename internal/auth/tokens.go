@@ -72,6 +72,25 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return authToken, nil
 }
 
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeaders, ok := headers["Authorization"]
+	if !ok {
+		return "", errors.New("auth/tokens.go: failed to get 'Authorization' Header Value")
+	}
+	authToken := ""
+	for _, el := range authHeaders {
+		if strings.HasPrefix(el, "ApiKey") {
+			el = strings.TrimPrefix(el, "ApiKey")
+			authToken = strings.Trim(el, " ")
+			break
+		}
+	}
+	if authToken == "" {
+		return "", errors.New("auth/tokens.go: failed to extract key from Authorization Header")
+	}
+	return authToken, nil
+}
+
 func MakeRefreshToken() string {
 	key := make([]byte, 32)
 	rand.Read(key)
